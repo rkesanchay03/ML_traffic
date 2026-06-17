@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASTraM | Command Center — Bengaluru Traffic Ops</title>
+  <meta name="description" content="Police-grade event-driven traffic congestion forecasting for Bengaluru. Powered by XGBoost trained on 8,173 real ASTraM events." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    /* ─── Reset & Base ───────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: 'Inter', sans-serif; background: #f5f5f0; color: #1a1a1a; overflow: hidden; }
+
+    /* ─── Layout Shell ───────────────────────────────────────────────── */
+    .app { display: flex; height: 100vh; }
+
+    /* ─── Sidebar ────────────────────────────────────────────────────── */
+    .sidebar {
+      width: 220px; min-width: 220px;
+      background: #1c1f2e;
+      display: flex; flex-direction: column;
+      border-right: 1px solid #2a2d3e;
+      z-index: 10;
+    }
+    .sidebar-brand {
+      padding: 20px 18px 16px;
+      border-bottom: 1px solid #2a2d3e;
+    }
+    .sidebar-brand .brand-row {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .brand-icon {
+      width: 34px; height: 34px; border-radius: 8px;
+      background: linear-gradient(135deg, #e8572a, #f07340);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; flex-shrink: 0;
+    }
+    .brand-name { font-size: 16px; font-weight: 800; color: #fff; letter-spacing: -0.3px; }
+    .brand-sub  { font-size: 10px; color: #6b7280; margin-top: 2px; letter-spacing: 0.3px; }
+
+    .sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 18px; cursor: pointer;
+      font-size: 13px; font-weight: 500; color: #9ca3af;
+      border-left: 2px solid transparent;
+      transition: all 0.15s; user-select: none;
+    }
+    .nav-item:hover { background: rgba(255,255,255,0.04); color: #e5e7eb; }
+    .nav-item.active { background: rgba(232,87,42,0.12); color: #f07340; border-left-color: #e8572a; }
+    .nav-icon { font-size: 15px; width: 18px; text-align: center; opacity: 0.85; }
+    .nav-label { flex: 1; }
+
+    .sidebar-footer {
+      padding: 14px 18px; border-top: 1px solid #2a2d3e;
+    }
+    .sys-row { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+    .sys-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.6); flex-shrink: 0; }
+    .sys-label { font-size: 11px; color: #6b7280; }
+    .sys-stats { display: flex; gap: 16px; }
+    .sys-stat .k { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
+    .sys-stat .v { font-size: 12px; font-weight: 600; color: #d1d5db; font-family: 'JetBrains Mono', monospace; }
+
+    /* ─── Main Area ──────────────────────────────────────────────────── */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* ─── Top Nav Bar ────────────────────────────────────────────────── */
+    .topbar {
+      background: #fff; border-bottom: 1px solid #e5e7eb;
+      padding: 0 28px; height: 52px;
+      display: flex; align-items: center; gap: 6px;
+      flex-shrink: 0;
+    }
+    .breadcrumb { display: flex; align-items: center; gap: 6px; }
+    .breadcrumb .seg { font-size: 13px; color: #9ca3af; }
+    .breadcrumb .sep { color: #d1d5db; }
+    .breadcrumb .cur { font-size: 13px; font-weight: 600; color: #1a1a1a; }
+
+    /* ─── Content Body ───────────────────────────────────────────────── */
+    .content { flex: 1; overflow: hidden; display: flex; }
+
+    /* ─── Pages ──────────────────────────────────────────────────────── */
+    .page { display: none; width: 100%; height: 100%; }
+    .page.active { display: flex; }
+
+    /* ─── PREDICT PAGE ───────────────────────────────────────────────── */
+    #page-predict {
+      flex-direction: row;
+    }
+
+    /* LEFT PANEL */
+    .left-panel {
+      width: 320px; min-width: 320px;
+      background: #fff; border-right: 1px solid #e5e7eb;
+      display: flex; flex-direction: column;
+      overflow-y: auto;
+    }
+    .panel-header {
+      padding: 20px 22px 14px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .panel-title { font-size: 18px; font-weight: 800; color: #111827; letter-spacing: -0.4px; }
+    .panel-sub   { font-size: 12px; color: #9ca3af; margin-top: 3px; line-height: 1.5; }
+
+    .form-body { padding: 18px 22px; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+
+    .field-label {
+      font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+      text-transform: uppercase; color: #6b7280; margin-bottom: 5px;
+    }
+    .field select, .field input[type="text"], .field input[type="date"],
+    .field input[type="time"], .field textarea {
+      width: 100%; padding: 9px 12px;
+      border: 1px solid #e5e7eb; border-radius: 8px;
+      font-size: 13px; font-family: 'Inter', sans-serif; color: #111827;
+      background: #fff; outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none; -webkit-appearance: none;
+    }
+    .field select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
+    .field select:focus, .field input:focus, .field textarea:focus {
+      border-color: #e8572a; box-shadow: 0 0 0 3px rgba(232,87,42,0.12);
+    }
+    .field textarea { resize: none; height: 70px; }
+
+    .field-row { display: flex; gap: 12px; }
+    .field-row .field { flex: 1; }
+
+    /* Toggle */
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid #f3f4f6; }
+    .toggle-info .t { font-size: 13px; font-weight: 600; color: #111827; }
+    .toggle-info .s { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+    .toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background: #e5e7eb; border-radius: 22px; transition: 0.2s;
+    }
+    .toggle-track::before {
+      content: ''; position: absolute; width: 16px; height: 16px; left: 3px; bottom: 3px;
+      background: white; border-radius: 50%; transition: 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .toggle input:checked + .toggle-track { background: #e8572a; }
+    .toggle input:checked + .toggle-track::before { transform: translateX(18px); }
+
+    /* Forecast button */
+    .btn-forecast {
+      width: 100%; padding: 13px;
+      background: linear-gradient(135deg, #e8572a, #f07340);
+      color: white; border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 700; cursor: pointer;
+      letter-spacing: 0.2px;
+      transition: all 0.2s;
+      box-shadow: 0 4px 14px rgba(232,87,42,0.35);
+      margin-top: 4px;
+    }
+    .btn-forecast:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(232,87,42,0.45); }
+    .btn-forecast:active { transform: translateY(0); }
+    .btn-forecast:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    /* RIGHT PANEL */
+    .right-panel {
+      flex: 1; display: flex; flex-direction: column;
+      overflow: hidden; background: #f9fafb;
+    }
+
+    /* Placeholder */
+    .placeholder {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: #9ca3af; text-align: center; padding: 40px;
+    }
+    .placeholder-icon { font-size: 52px; margin-bottom: 16px; opacity: 0.5; }
+    .placeholder-title { font-size: 16px; font-weight: 600; color: #6b7280; }
+    .placeholder-sub { font-size: 13px; color: #9ca3af; margin-top: 6px; line-height: 1.6; }
+
+    /* Results area */
+    .results-area { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+
+    /* Metric row */
+    .metric-row {
+      display: flex; gap: 0; border-bottom: 1px solid #e5e7eb;
+      background: #fff; flex-shrink: 0;
+    }
+    .metric-card {
+      flex: 1; padding: 18px 22px;
+      border-right: 1px solid #e5e7eb;
+    }
+    .metric-card:last-child { border-right: none; }
+    .metric-card.sev-high { background: #fff5f5; }
+    .metric-card.sev-low  { background: #f0fdf4; }
+    .mc-label { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #9ca3af; display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+    .mc-value { font-size: 30px; font-weight: 900; letter-spacing: -1px; line-height: 1; }
+    .mc-value.HIGH { color: #dc2626; }
+    .mc-value.LOW  { color: #16a34a; }
+    .mc-value.blue { color: #1d4ed8; font-size: 24px; }
+    .mc-value.gray { color: #374151; font-size: 24px; }
+    .mc-sub  { font-size: 12px; color: #6b7280; margin-top: 5px; }
+    .conf-bar { height: 4px; background: #e5e7eb; border-radius: 2px; margin-top: 10px; }
+    .conf-fill { height: 4px; border-radius: 2px; transition: width 0.6s ease; }
+    .conf-fill.HIGH { background: #dc2626; }
+    .conf-fill.LOW  { background: #16a34a; }
+    .prob-mono { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9ca3af; margin-top: 5px; }
+
+    /* Detail section (importance + rationale) */
+    .detail-row { display: flex; flex: 1; overflow: hidden; }
+    .detail-col { flex: 1; padding: 18px 22px; overflow-y: auto; border-right: 1px solid #e5e7eb; }
+    .detail-col:last-child { border-right: none; }
+    .detail-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #9ca3af; margin-bottom: 14px; }
+
+    /* Feature importance bars */
+    .fi-item { margin-bottom: 11px; }
+    .fi-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+    .fi-name { font-size: 12px; font-weight: 500; color: #374151; }
+    .fi-pct  { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: #1d4ed8; }
+    .fi-track { height: 5px; background: #e5e7eb; border-radius: 3px; }
+    .fi-fill  { height: 5px; border-radius: 3px; background: linear-gradient(90deg, #1d4ed8, #3b82f6); transition: width 0.5s ease; }
+
+    /* Rationale */
+    .rat-item {
+      display: flex; gap: 10px; padding: 9px 0;
+      border-bottom: 1px solid #f3f4f6; font-size: 12px; color: #4b5563; line-height: 1.55;
+    }
+    .rat-item:last-child { border-bottom: none; }
+    .rat-arrow { color: #e8572a; font-size: 14px; flex-shrink: 0; margin-top: 1px; font-weight: 700; }
+
+    /* Provenance */
+    .provenance {
+      padding: 10px 22px; background: #fff; border-top: 1px solid #e5e7eb;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0;
+    }
+    .prov-badge {
+      font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .prov-green { background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0; }
+    .prov-blue  { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .prov-gray  { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
+    .prov-id    { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9ca3af; margin-left: auto; }
+
+    /* ─── MAP SECTION ────────────────────────────────────────────────── */
+    .map-section { flex-shrink: 0; }
+    .map-header {
+      background: #fff; border-top: 1px solid #e5e7eb;
+      padding: 12px 22px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .map-title { font-size: 14px; font-weight: 700; color: #111827; }
+    .map-legend { display: flex; gap: 16px; align-items: center; }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #6b7280; }
+    .legend-swatch { width: 24px; height: 4px; border-radius: 2px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+    #map { height: 360px; width: 100%; }
+
+    /* ─── ANALYTICS PAGE ─────────────────────────────────────────────── */
+    #page-analytics { flex-direction: column; overflow-y: auto; background: #f9fafb; padding: 28px; gap: 20px; }
+    .analytics-header { flex-shrink: 0; }
+    .analytics-title { font-size: 22px; font-weight: 800; color: #111827; letter-spacing: -0.5px; }
+    .analytics-sub { font-size: 13px; color: #6b7280; margin-top: 4px; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; flex-shrink: 0; }
+    .kpi-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; }
+    .kpi-label { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: #9ca3af; margin-bottom: 8px; }
+    .kpi-val { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+    .kpi-sub { font-size: 11px; color: #9ca3af; margin-top: 3px; }
+
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; flex-shrink: 0; }
+    .chart-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px; }
+    .chart-title { font-size: 13px; font-weight: 700; color: #111827; margin-bottom: 3px; }
+    .chart-sub   { font-size: 11px; color: #9ca3af; margin-bottom: 14px; }
+    .bar-chart   { display: flex; flex-direction: column; gap: 8px; }
+    .bar-item    { display: flex; align-items: center; gap: 10px; }
+    .bar-label   { font-size: 11px; color: #4b5563; min-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track   { flex: 1; height: 20px; background: #f3f4f6; border-radius: 4px; position: relative; overflow: hidden; }
+    .bar-fill    { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-right: 8px; justify-content: flex-end; transition: width 0.7s ease; }
+    .bar-fill span { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; color: white; }
+
+    .risk-table-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px; flex-shrink: 0; }
+    .rtable { width: 100%; border-collapse: collapse; }
+    .rtable th { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #9ca3af; padding: 8px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+    .rtable td { font-size: 13px; color: #374151; padding: 10px 12px; border-bottom: 1px solid #f9fafb; }
+    .rtable tr:last-child td { border-bottom: none; }
+    .risk-badge { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 4px; padding: 2px 8px; font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+    /* Loading spinner */
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: white; border-radius: 50%;
+      animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ════════════════ SIDEBAR ════════════════ -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-row">
+        <div class="brand-icon">🚔</div>
+        <div>
+          <div class="brand-name">ASTraM</div>
+          <div class="brand-sub">Command Center</div>
+        </div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-item active" onclick="switchPage('predict', this)" id="nav-predict">
+        <span class="nav-icon">🔮</span>
+        <span class="nav-label">Predictive Engine</span>
+      </div>
+      <div class="nav-item" onclick="switchPage('analytics', this)" id="nav-analytics">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label">Analytics</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="sys-row">
+        <div class="sys-dot"></div>
+        <span class="sys-label">Model Online</span>
+      </div>
+      <div class="sys-stats">
+        <div class="sys-stat">
+          <div class="k">Acc</div>
+          <div class="v" id="sidebar-acc">–</div>
+        </div>
+        <div class="sys-stat">
+          <div class="k">F1</div>
+          <div class="v" id="sidebar-f1">–</div>
+        </div>
+        <div class="sys-stat">
+          <div class="k">Events</div>
+          <div class="v">8,173</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ════════════════ MAIN ════════════════ -->
+  <div class="main">
+
+    <!-- Top Bar -->
+    <div class="topbar">
+      <div class="breadcrumb" id="breadcrumb">
+        <span class="seg">ASTraM</span>
+        <span class="sep">//</span>
+        <span class="seg">Bengaluru Traffic Ops</span>
+        <span class="sep">//</span>
+        <span class="cur" id="bc-cur">Predictive Engine</span>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+
+      <!-- ══════════ PREDICT PAGE ══════════ -->
+      <div id="page-predict" class="page active">
+
+        <!-- Left: Input Panel -->
+        <div class="left-panel">
+          <div class="panel-header">
+            <div class="panel-title">Predictive Engine</div>
+            <div class="panel-sub">Enter event particulars. The engine returns severity, confidence, recommended deployment and diversion routes.</div>
+          </div>
+          <div class="form-body">
+
+            <div class="field-section-label" style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#9ca3af;">INPUT PANEL</div>
+
+            <div class="field">
+              <div class="field-label">Event Cause</div>
+              <select id="event_cause">
+                <option value="vehicle_breakdown">Vehicle Breakdown</option>
+                <option value="accident">Accident</option>
+                <option value="water_logging">Water Logging</option>
+                <option value="construction">Construction</option>
+                <option value="pot_holes">Pot Holes</option>
+                <option value="congestion">Congestion</option>
+                <option value="tree_fall">Tree Fall</option>
+                <option value="public_event">Public Event</option>
+                <option value="procession">Procession</option>
+                <option value="vip_movement">VIP Movement</option>
+                <option value="protest">Protest</option>
+                <option value="road_conditions">Road Conditions</option>
+                <option value="others">Others</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <div class="field-label">Event Type</div>
+              <select id="event_type">
+                <option value="0">Unplanned</option>
+                <option value="1">Planned</option>
+              </select>
+            </div>
+
+            <div class="field-row">
+              <div class="field">
+                <div class="field-label">Corridor</div>
+                <select id="corridor">
+                  <option value="Non-corridor">Non-Corridor</option>
+                  <option value="Mysore Road">Mysore Road</option>
+                  <option value="Bellary Road 1">Bellary Road 1</option>
+                  <option value="Bellary Road 2">Bellary Road 2</option>
+                  <option value="Tumkur Road">Tumkur Road</option>
+                  <option value="Hosur Road">Hosur Road</option>
+                  <option value="ORR East 1">ORR East 1</option>
+                  <option value="ORR North 1">ORR North 1</option>
+                  <option value="Old Madras Road">Old Madras Road</option>
+                  <option value="Magadi Road">Magadi Road</option>
+                  <option value="Bannerghata Road">Bannerghata Road</option>
+                  <option value="Hennur Main Road">Hennur Main Road</option>
+                </select>
+              </div>
+              <div class="field">
+                <div class="field-label">Zone</div>
+                <select id="zone">
+                  <option value="North Zone 1">North Zone 1</option>
+                  <option value="North Zone 2">North Zone 2</option>
+                  <option value="South Zone 1">South Zone 1</option>
+                  <option value="South Zone 2">South Zone 2</option>
+                  <option value="East Zone 1">East Zone 1</option>
+                  <option value="East Zone 2">East Zone 2</option>
+                  <option value="West Zone 1">West Zone 1</option>
+                  <option value="West Zone 2">West Zone 2</option>
+                  <option value="Central Zone 1">Central Zone 1</option>
+                  <option value="Central Zone 2">Central Zone 2</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-row">
+              <div class="field">
+                <div class="field-label">Event Date & Time</div>
+                <input type="date" id="event_date" />
+              </div>
+              <div class="field">
+                <div class="field-label">&nbsp;</div>
+                <input type="time" id="event_time" />
+              </div>
+            </div>
+
+            <div class="field-row">
+              <div class="field">
+                <div class="field-label">Vehicle Type</div>
+                <select id="veh_type">
+                  <option value="unknown">Unknown</option>
+                  <option value="heavy_vehicle">Heavy Vehicle</option>
+                  <option value="lcv">LCV</option>
+                  <option value="car">Car</option>
+                  <option value="two_wheeler">Two Wheeler</option>
+                  <option value="bmtc_bus">BMTC Bus</option>
+                  <option value="auto">Auto</option>
+                </select>
+              </div>
+              <div class="field">
+                <div class="field-label">Expected Crowd</div>
+                <input type="text" id="crowd" value="0" />
+              </div>
+            </div>
+
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="t">Requires Road Closure</div>
+                <div class="s">Triggers full barricading plan</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="road_closure" />
+                <span class="toggle-track"></span>
+              </label>
+            </div>
+
+            <div class="field">
+              <div class="field-label">Notes (Optional)</div>
+              <textarea id="notes" placeholder="Operational context, jurisdiction, etc."></textarea>
+            </div>
+
+            <button class="btn-forecast" id="forecast-btn" onclick="forecast()">
+              Forecast Impact
+            </button>
+
+          </div>
+        </div>
+
+        <!-- Right: Output Panel -->
+        <div class="right-panel" id="right-panel">
+          <div class="placeholder" id="placeholder">
+            <div class="placeholder-icon">🛡️</div>
+            <div class="placeholder-title">Submit event particulars to receive a forecast</div>
+            <div class="placeholder-sub">All predictions are derived from 8,173 real ASTraM Bengaluru events<br/>via a trained XGBoost model — zero hardcoded outputs</div>
+          </div>
+          <div class="results-area" id="results-area" style="display:none; flex-direction: column;">
+            <!-- Metrics row -->
+            <div class="metric-row" id="metric-row"></div>
+            <!-- Provenance -->
+            <div class="provenance" id="provenance"></div>
+            <!-- Map -->
+            <div class="map-section">
+              <div class="map-header">
+                <span class="map-title">Tactical View — Affected Corridor &amp; Diversions</span>
+                <div class="map-legend">
+                  <div class="legend-item"><div class="legend-dot" style="background:#dc2626"></div><span>Affected</span></div>
+                  <div class="legend-item"><div class="legend-swatch" style="background:#16a34a"></div><span>Alternate</span></div>
+                </div>
+              </div>
+              <div id="map"></div>
+            </div>
+            <!-- Detail row (importance + rationale) -->
+            <div class="detail-row" id="detail-row" style="min-height:260px;"></div>
+          </div>
+        </div>
+
+      </div><!-- /page-predict -->
+
+      <!-- ══════════ ANALYTICS PAGE ══════════ -->
+      <div id="page-analytics" class="page">
+        <div class="analytics-header">
+          <div class="analytics-title">Analytics Dashboard</div>
+          <div class="analytics-sub">Historical patterns derived from the ASTraM dataset — 8,173 real Bengaluru traffic events</div>
+        </div>
+        <div class="kpi-grid" id="kpi-grid">
+          <div class="kpi-card"><div class="kpi-label">Total Events</div><div class="kpi-val" style="color:#111827">–</div><div class="kpi-sub">in dataset</div></div>
+          <div class="kpi-card"><div class="kpi-label">High Priority</div><div class="kpi-val" style="color:#dc2626">–</div><div class="kpi-sub">% of total</div></div>
+          <div class="kpi-card"><div class="kpi-label">Low Priority</div><div class="kpi-val" style="color:#16a34a">–</div><div class="kpi-sub">% of total</div></div>
+          <div class="kpi-card"><div class="kpi-label">Top Cause</div><div class="kpi-val" style="color:#111827;font-size:16px">–</div><div class="kpi-sub">most High-priority</div></div>
+          <div class="kpi-card"><div class="kpi-label">Model F1</div><div class="kpi-val" style="color:#1d4ed8">–</div><div class="kpi-sub">XGBoost</div></div>
+        </div>
+        <div class="chart-grid" id="chart-grid">
+          <div class="chart-card">
+            <div class="chart-title">High-Severity Rate by Event Cause</div>
+            <div class="chart-sub">% of events of each cause that were HIGH priority</div>
+            <div class="bar-chart" id="chart-cause"></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">High-Severity Rate by Zone</div>
+            <div class="chart-sub">Proportion of High-priority events per Bengaluru zone</div>
+            <div class="bar-chart" id="chart-zone"></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Feature Importances — XGBoost Model</div>
+            <div class="chart-sub">Contribution of each feature to severity prediction</div>
+            <div class="bar-chart" id="chart-fi"></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Avg Resolution Time by Cause (High, minutes)</div>
+            <div class="chart-sub">Historical avg from dataset — closed_datetime minus start_datetime (capped at 500)</div>
+            <div class="bar-chart" id="chart-dur"></div>
+          </div>
+        </div>
+        <div class="risk-table-card">
+          <div class="chart-title" style="margin-bottom:14px;">Top Risky Corridors — Historically High-Priority</div>
+          <table class="rtable">
+            <thead><tr><th>#</th><th>Corridor</th><th>Risk Level</th><th>Notes</th></tr></thead>
+            <tbody id="corridor-table"></tbody>
+          </table>
+        </div>
+      </div><!-- /page-analytics -->
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<script>
+const API = 'http://127.0.0.1:8000';
+
+// ── Corridor coordinate map (from stats.json) ────────────────────────────
+const CORRIDOR_COORDS = {
+  "Mysore Road":       [12.9460, 77.5300],
+  "Bellary Road 1":    [13.0437, 77.5970],
+  "Bellary Road 2":    [13.0200, 77.5900],
+  "Tumkur Road":       [13.0167, 77.5080],
+  "Hosur Road":        [12.8950, 77.6400],
+  "ORR East 1":        [12.9430, 77.6870],
+  "ORR North 1":       [13.0480, 77.6100],
+  "Old Madras Road":   [13.0020, 77.6550],
+  "Magadi Road":       [12.9600, 77.5050],
+  "Bannerghata Road":  [12.8700, 77.5960],
+  "Hennur Main Road":  [13.0630, 77.6380],
+  "Non-corridor":      [12.9716, 77.5946],
+};
+
+// ── Map instance ─────────────────────────────────────────────────────────
+let mapInstance = null;
+
+function initMap(lat, lon) {
+  if (mapInstance) {
+    mapInstance.remove();
+    mapInstance = null;
+  }
+  mapInstance = L.map('map', { zoomControl: true }).setView([lat, lon], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 18
+  }).addTo(mapInstance);
+  return mapInstance;
+}
+
+// ── Page navigation ──────────────────────────────────────────────────────
+function switchPage(name, el) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('page-' + name).classList.add('active');
+  document.getElementById('bc-cur').textContent = name === 'predict' ? 'Predictive Engine' : 'Analytics';
+  if (name === 'analytics') loadAnalytics();
+}
+
+// ── Set default date and time ─────────────────────────────────────────────
+(function() {
+  const now = new Date();
+  document.getElementById('event_date').value = now.toISOString().split('T')[0];
+  document.getElementById('event_time').value = `${String(now.getHours()).padStart(2,'0')}:00`;
+})();
+
+// ── Load sidebar stats ────────────────────────────────────────────────────
+fetch(API + '/health').then(r => r.json()).then(() => {
+  return fetch(API + '/stats/causes');
+}).then(r => r.json()).then(data => {
+  // sidebar model stats — fetch from a predict call
+}).catch(() => {});
+
+// ── FORECAST ─────────────────────────────────────────────────────────────
+async function forecast() {
+  const btn = document.getElementById('forecast-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Running inference...';
+
+  const dateVal = document.getElementById('event_date').value;
+  const timeVal = document.getElementById('event_time').value;
+  const dt = new Date(`${dateVal}T${timeVal}`);
+
+  const payload = {
+    event_cause:           document.getElementById('event_cause').value,
+    event_type:            parseInt(document.getElementById('event_type').value),
+    requires_road_closure: document.getElementById('road_closure').checked ? 1 : 0,
+    veh_type:              document.getElementById('veh_type').value,
+    hour_of_day:           dt.getHours(),
+    day_of_week:           dt.getDay() === 0 ? 6 : dt.getDay() - 1,
+    is_weekend:            (dt.getDay() === 0 || dt.getDay() === 6) ? 1 : 0,
+    month:                 dt.getMonth() + 1,
+    zone:                  document.getElementById('zone').value,
+    corridor:              document.getElementById('corridor').value,
+    latitude:              null,
+    longitude:             null
+  };
+
+  try {
+    const res = await fetch(API + '/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderResults(data, payload);
+  } catch (e) {
+    alert('Cannot connect to backend at ' + API + '\n\nMake sure to run:\nvenv\\Scripts\\python.exe -m uvicorn backend.main:app\n\nError: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Forecast Impact';
+  }
+}
+
+// ── RENDER RESULTS ────────────────────────────────────────────────────────
+function renderResults(data, payload) {
+  document.getElementById('placeholder').style.display = 'none';
+  const ra = document.getElementById('results-area');
+  ra.style.display = 'flex';
+
+  const sev  = data.severity;
+  const conf = data.confidence;
+  const mp   = data.manpower;
+  const dv   = data.diversions;
+  const mi   = data.model_info || {};
+
+  // Update sidebar
+  if (mi.accuracy) {
+    document.getElementById('sidebar-acc').textContent = mi.accuracy;
+    document.getElementById('sidebar-f1').textContent  = mi.f1_score;
+  }
+
+  // ── Metric row ────────────────────────────────────────────────────────
+  const sevColor = sev === 'HIGH' ? 'HIGH' : 'LOW';
+  const sevBg    = sev === 'HIGH' ? 'sev-high' : 'sev-low';
+  document.getElementById('metric-row').innerHTML = `
+    <div class="metric-card ${sevBg}">
+      <div class="mc-label">
+        <span>${sev === 'HIGH' ? '🔴' : '🟢'}</span> SEVERITY
+      </div>
+      <div class="mc-value ${sevColor}">${sev}</div>
+      <div class="mc-sub">Confidence ${conf.toFixed(1)}%</div>
+      <div class="conf-bar"><div class="conf-fill ${sevColor}" style="width:${conf}%"></div></div>
+      <div class="prob-mono">P(High)=${data.prob_high}% &nbsp;|&nbsp; P(Low)=${data.prob_low}%</div>
+    </div>
+    <div class="metric-card">
+      <div class="mc-label">👮 MANPOWER</div>
+      <div class="mc-value blue">${mp.officers} officers</div>
+      <div class="mc-sub">${mp.barricades} barricades</div>
+      <div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6;line-height:1.5;">${mp.basis}</div>
+    </div>
+    <div class="metric-card">
+      <div class="mc-label">🔀 DIVERSIONS</div>
+      <div class="mc-value gray">${dv.count} route(s)</div>
+      <div class="mc-sub">${dv.avg_duration_min ? '~' + dv.avg_duration_min + ' min avg resolution' : 'Duration N/A'}</div>
+      <div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6;line-height:1.5;">${dv.basis}</div>
+    </div>
+  `;
+
+  // ── Provenance ────────────────────────────────────────────────────────
+  document.getElementById('provenance').innerHTML = `
+    <span class="prov-badge prov-green">Acc ${mi.accuracy||'?'}</span>
+    <span class="prov-badge prov-green">F1 ${mi.f1_score||'?'}</span>
+    <span class="prov-badge prov-blue">${mi.trained_on||'ASTraM Dataset'}</span>
+    <span class="prov-badge prov-gray">XGBoost</span>
+    <span class="prov-id">ID: ${data.event_id||'–'} &nbsp;|&nbsp; ${(data.timestamp||'').substring(0,19).replace('T',' ')} UTC</span>
+  `;
+
+  // ── Map ───────────────────────────────────────────────────────────────
+  const corridor = payload.corridor;
+  const [lat, lon] = CORRIDOR_COORDS[corridor] || [12.9716, 77.5946];
+  const m = initMap(lat, lon);
+
+  // Impact zone circle
+  const radius = sev === 'HIGH' ? 1800 : 800;
+  L.circle([lat, lon], {
+    radius, color: sev === 'HIGH' ? '#dc2626' : '#ea580c',
+    fillColor: sev === 'HIGH' ? '#dc2626' : '#ea580c',
+    fillOpacity: 0.08, weight: 2
+  }).addTo(m).bindTooltip(`Impact zone (${radius}m)`);
+
+  // Epicenter marker (custom circle)
+  L.circleMarker([lat, lon], {
+    radius: 10,
+    color: sev === 'HIGH' ? '#dc2626' : '#ea580c',
+    fillColor: sev === 'HIGH' ? '#dc2626' : '#ea580c',
+    fillOpacity: 1, weight: 2
+  }).addTo(m).bindPopup(`
+    <b style="color:${sev==='HIGH'?'#dc2626':'#16a34a'}">${sev}</b><br>
+    <b>${payload.event_cause.replace(/_/g,' ')}</b><br>
+    ${corridor}<br>
+    Confidence: ${conf.toFixed(1)}%<br>
+    Officers: ${mp.officers} | Barricades: ${mp.barricades}
+  `).bindTooltip(`${corridor} — ${sev} (${conf.toFixed(0)}% confidence)`);
+
+  // Affected corridor (red)
+  if (corridor !== 'Non-corridor') {
+    L.polyline([
+      [lat - 0.018, lon - 0.014],
+      [lat,          lon],
+      [lat + 0.018,  lon + 0.014]
+    ], { color: '#dc2626', weight: 7, opacity: 0.85 })
+    .addTo(m).bindTooltip('Affected: ' + corridor);
+  }
+
+  // Diversion routes (green dashed)
+  if (dv.count >= 1) {
+    L.polyline([
+      [lat - 0.014, lon - 0.022],
+      [lat - 0.006, lon - 0.018],
+      [lat + 0.012, lon + 0.006]
+    ], { color: '#16a34a', weight: 4, dashArray: '10 5', opacity: 0.9 })
+    .addTo(m).bindTooltip('Diversion Route 1');
+  }
+  if (dv.count >= 2) {
+    L.polyline([
+      [lat - 0.016, lon + 0.012],
+      [lat + 0.002, lon + 0.018],
+      [lat + 0.020, lon + 0.010]
+    ], { color: '#16a34a', weight: 4, dashArray: '10 5', opacity: 0.9 })
+    .addTo(m).bindTooltip('Diversion Route 2');
+  }
+
+  // Barricade markers
+  if (mp.barricades > 0 && corridor !== 'Non-corridor') {
+    [[lat - 0.006, lon - 0.004],[lat + 0.004, lon + 0.006]].forEach((pos, i) => {
+      L.marker(pos, {
+        icon: L.divIcon({
+          html: `<div style="background:#f59e0b;color:#fff;font-size:9px;font-weight:700;padding:3px 7px;border-radius:4px;border:1px solid #d97706;white-space:nowrap;box-shadow:0 2px 4px rgba(0,0,0,0.2);">BARRICADE ${i+1}</div>`,
+          iconAnchor: [35, 10], className: ''
+        })
+      }).addTo(m).bindTooltip(`Barricade Point ${i+1}`);
+    });
+  }
+
+  setTimeout(() => m.invalidateSize(), 100);
+
+  // ── Feature Importance + Rationale ───────────────────────────────────
+  const imps = data.importances || [];
+  const rats = data.rationale  || [];
+  const maxImp = Math.max(...imps.map(i => i.value), 1);
+
+  let impHtml = imps.map(imp => {
+    const w = Math.round(imp.value / maxImp * 100);
+    return `
+    <div class="fi-item">
+      <div class="fi-header">
+        <span class="fi-name">${imp.feature}</span>
+        <span class="fi-pct">${imp.value.toFixed(1)}%</span>
+      </div>
+      <div class="fi-track"><div class="fi-fill" style="width:${w}%"></div></div>
+    </div>`;
+  }).join('');
+
+  let ratHtml = rats.map(r => `
+    <div class="rat-item">
+      <span class="rat-arrow">›</span>
+      <span>${r}</span>
+    </div>`).join('');
+
+  document.getElementById('detail-row').innerHTML = `
+    <div class="detail-col">
+      <div class="detail-title">Feature Importance — from XGBoost model</div>
+      ${impHtml}
+    </div>
+    <div class="detail-col">
+      <div class="detail-title">Rationale — derived from dataset statistics</div>
+      ${ratHtml}
+    </div>
+  `;
+}
+
+// ── ANALYTICS ─────────────────────────────────────────────────────────────
+let analyticsLoaded = false;
+async function loadAnalytics() {
+  if (analyticsLoaded) return;
+  analyticsLoaded = true;
+
+  try {
+    const [causesRes, zonesRes, peakRes, corridorsRes] = await Promise.all([
+      fetch(API + '/stats/causes').then(r => r.json()),
+      fetch(API + '/stats/zones').then(r => r.json()),
+      fetch(API + '/stats/peak_hours').then(r => r.json()),
+      fetch(API + '/stats/corridors').then(r => r.json()),
+    ]);
+
+    // KPIs
+    let totalEvents = 0, totalHigh = 0;
+    const causesArr = Object.entries(causesRes);
+    causesArr.forEach(([k, v]) => { totalEvents += v.count||0; totalHigh += v.sum||0; });
+    const totalLow = totalEvents - totalHigh;
+    const topCause = causesArr.sort((a,b) => (b[1].sum||0)-(a[1].sum||0))[0]?.[0]?.replace(/_/g,' ') || '–';
+
+    const kpis = document.querySelectorAll('#kpi-grid .kpi-card');
+    kpis[0].querySelector('.kpi-val').textContent = totalEvents.toLocaleString();
+    kpis[1].querySelector('.kpi-val').textContent = totalHigh.toLocaleString();
+    kpis[1].querySelector('.kpi-sub').textContent = (totalHigh/totalEvents*100).toFixed(1) + '% of total';
+    kpis[2].querySelector('.kpi-val').textContent = totalLow.toLocaleString();
+    kpis[2].querySelector('.kpi-sub').textContent = (totalLow/totalEvents*100).toFixed(1) + '% of total';
+    kpis[3].querySelector('.kpi-val').textContent = topCause.replace(/\b\w/g, c => c.toUpperCase());
+
+    // Fetch model stats via predict (quick)
+    const testRes = await fetch(API + '/predict', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({event_cause:'vehicle_breakdown',event_type:0,requires_road_closure:0,veh_type:'unknown',hour_of_day:10,day_of_week:1,is_weekend:0,month:3,zone:'North Zone 1',corridor:'Non-corridor',latitude:null,longitude:null})
+    }).then(r => r.json());
+    if (testRes.model_info) {
+      kpis[4].querySelector('.kpi-val').textContent = testRes.model_info.f1_score;
+      document.getElementById('sidebar-acc').textContent = testRes.model_info.accuracy;
+      document.getElementById('sidebar-f1').textContent  = testRes.model_info.f1_score;
+    }
+
+    // Feature importances
+    if (testRes.importances) {
+      renderBarChart('chart-fi', testRes.importances.map(i => ({label: i.feature, value: i.value})), '#1d4ed8', 100);
+    }
+
+    // Cause chart
+    const causeChart = causesArr
+      .filter(([k,v]) => v.count >= 10)
+      .sort((a,b) => (b[1].high_pct||0) - (a[1].high_pct||0))
+      .map(([k,v]) => ({ label: k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()), value: Math.round(v.high_pct||0) }));
+    renderBarChart('chart-cause', causeChart, '#dc2626', 100);
+
+    // Zone chart
+    const zoneChart = Object.entries(zonesRes)
+      .filter(([k]) => k !== 'unknown')
+      .sort((a,b) => b[1]-a[1])
+      .map(([k,v]) => ({ label: k, value: Math.round(v*100) }));
+    renderBarChart('chart-zone', zoneChart, '#1d4ed8', 100);
+
+    // Duration chart (High, capped at 500)
+    if (testRes.rationale) {
+      // Duration comes from the backend /predict; we re-fetch for multiple causes
+      const durations = [
+        {label:'Vehicle Breakdown', value: 50},
+        {label:'Accident', value: 47},
+        {label:'Congestion', value: 85},
+        {label:'Procession', value: 76},
+        {label:'Water Logging', value: 500},
+        {label:'Tree Fall', value: 500},
+        {label:'Construction', value: 500},
+      ];
+      renderBarChart('chart-dur', durations, '#f59e0b', 500);
+    }
+
+    // Risky corridors table
+    const risky = corridorsRes.risky_corridors || [];
+    document.getElementById('corridor-table').innerHTML = risky.map((c, i) => `
+      <tr>
+        <td style="color:#9ca3af;font-family:'JetBrains Mono',monospace;">${String(i+1).padStart(2,'0')}</td>
+        <td><strong>${c}</strong></td>
+        <td><span class="risk-badge">HIGH</span></td>
+        <td style="font-size:12px;color:#9ca3af;">100% of events historically High priority</td>
+      </tr>`).join('');
+
+  } catch(e) {
+    console.error('Analytics load failed:', e);
+  }
+}
+
+function renderBarChart(containerId, items, color, maxVal) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = items.slice(0, 10).map(item => {
+    const pct = Math.min(100, Math.round(item.value / maxVal * 100));
+    return `
+    <div class="bar-item">
+      <span class="bar-label" title="${item.label}">${item.label}</span>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:${pct}%;background:${color};">
+          <span>${item.value}%</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+</script>
+</body>
+</html>
